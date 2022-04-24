@@ -2,7 +2,7 @@
 
 use std::error::Error;
 
-use bytes::BytesMut;
+use bytes::{BytesMut, Buf};
 use futures::stream::StreamExt;
 use memchr::memchr;
 use tokio::net::{TcpListener, TcpStream};
@@ -46,44 +46,52 @@ enum RedisValue {
     Array(Vec<RedisValue>),
 }
 
-fn word(src: &mut BytesMut) -> Option<BytesMut> {
+fn word(src: &[u8]) -> Option<(&[u8], usize)> {
     let pos = memchr(b'\r', &src)?;
 
     // FIXME: pos + 2 can overrun the buffer
-    let mut word = src.split_to(pos + 2);
-    let word = word.split_to(pos);
-
-    Some(word)
+    Some((&src[..pos], pos + 2))
 }
 
-fn int(src: &mut BytesMut) -> Option<i64> {
+fn int(src: &[u8]) -> Option<(i64, usize)> {
     word(src).and_then(|b| {
-        let s = std::str::from_utf8(&b).unwrap(); // FIXME: Don't unwrap() here.
-        Some(s.parse().unwrap())
+        let s = std::str::from_utf8(b.0).unwrap(); // FIXME: Don't unwrap() here.
+        Some((s.parse().unwrap(), b.1))
     })
 }
 
 // TODO: Eliminate copies!
-fn simple_string(src: &mut BytesMut) -> Option<RedisValue> {
-    Some(RedisValue::SimpleString(String::from_utf8_lossy(&word(src)?).to_string()))
+fn simple_string(src: &[u8]) -> Option<(RedisValue, usize)> {
+    word(src).map(|(word, pos)| {
+        (
+            RedisValue::SimpleString(String::from_utf8_lossy(word).to_string()),
+            pos,
+        )
+    })
 }
 
-fn error(src: &mut BytesMut) -> Option<RedisValue> {
-    Some(RedisValue::Error(String::from_utf8_lossy(&word(src)?).to_string()))
+fn error(src: &[u8]) -> Option<(RedisValue, usize)> {
+    word(src).map(|(word, pos)| {
+        (
+            RedisValue::Error(String::from_utf8_lossy(word).to_string()),
+            pos,
+        )
+    })
 }
 
-fn integer(src: &mut BytesMut) -> Option<RedisValue> {
-    Some(RedisValue::Integer(int(src)?))
+fn integer(src: &[u8]) -> Option<(RedisValue, usize)> {
+    int(src).map(|(i, pos)| (RedisValue::Integer(i), pos))
 }
 
 // TODO: More robost error handling
-fn bulk_string(src: &mut BytesMut) -> Option<RedisValue> {
+fn bulk_string(src: &[u8]) -> Option<(RedisValue, usize)> {
     // TODO: Use Result to indicate error.
-    let _len = int(src)?; // @TODO: Check length
-    let data = word(src)?;
-    let s = String::from_utf8_lossy(&data).to_string(); // TODO: Eliminate copy
+    let (_len, pos_len) = int(src)?; // @TODO: Check length
+    let (data, pos_data) = word(&src[pos_len..])?;
     
-    Some(RedisValue::BulkString(s))
+    let s = String::from_utf8_lossy(&data).to_string(); // TODO: Eliminate copy
+
+    Some((RedisValue::BulkString(s), pos_len + pos_data))
 }
 
 impl Decoder for RedisCodec {
@@ -96,15 +104,26 @@ impl Decoder for RedisCodec {
             return Ok(None);
         }
 
-        let first = src.split_to(1);
+        let first_byte = src[0];
+        let remain = &src[1..];
 
-        Ok(match first[0] {
-            b'+' => simple_string(src),
-            b'-' => error(src),
-            b':' => integer(src),
-            b'$' => bulk_string(src),
+        let result = match first_byte {
+            b'+' => simple_string(remain),
+            b'-' => error(remain),
+            b':' => integer(remain),
+            b'$' => bulk_string(remain),
             _ => panic!("Unknown first byte"), // TODO: Be a nice Rust citizen, don't panic
-        })
+        };
+
+        match result {
+            Some((value, pos)) => {
+                src.advance(pos + 1); // plus the first byte
+                Ok(Some(value))
+            },
+            None =>
+                Ok(None)
+            ,
+        }
     }
 }
 
