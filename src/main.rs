@@ -3,10 +3,10 @@
 use std::error::Error;
 
 use bytes::{Buf, BytesMut};
-use futures::stream::StreamExt;
+use futures::{stream::StreamExt, SinkExt};
 use memchr::memchr;
 use tokio::net::{TcpListener, TcpStream};
-use tokio_util::codec::Decoder;
+use tokio_util::codec::{Decoder, Encoder};
 
 mod kvstore;
 
@@ -31,6 +31,7 @@ async fn process_socket(socket: TcpStream) {
     while let Some(message) = conn.next().await {
         if let Ok(redis_value) = message {
             println!("received: {:?}", redis_value);
+            conn.send(redis_value).await.unwrap();
         }
     }
 }
@@ -136,6 +137,41 @@ fn parse(src: &[u8]) -> Option<(RedisValue, usize)> {
     .map(|(v, p)| (v, p + 1)) // Plus the first byte
 }
 
+fn serialize_redis_value(dst: &mut BytesMut, value: &RedisValue) {
+    match value {
+        RedisValue::SimpleString(s) => {
+            dst.extend_from_slice(b"+");
+            dst.extend_from_slice(s.as_bytes());
+            dst.extend_from_slice(b"\r\n");
+        }
+        RedisValue::Error(s) => {
+            dst.extend_from_slice(b"-");
+            dst.extend_from_slice(s.as_bytes());
+            dst.extend_from_slice(b"\r\n");
+        }
+        RedisValue::Integer(i) => {
+            dst.extend_from_slice(b":");
+            dst.extend_from_slice(format!("{}", i).as_bytes());
+            dst.extend_from_slice(b"\r\n");
+        }
+        RedisValue::BulkString(s) => {
+            dst.extend_from_slice(b"$");
+            dst.extend_from_slice(format!("{}", s.len()).as_bytes());
+            dst.extend_from_slice(b"\r\n");
+            dst.extend_from_slice(s.as_bytes());
+            dst.extend_from_slice(b"\r\n");
+        }
+        RedisValue::Array(arr) => {
+            dst.extend_from_slice(b"*");
+            dst.extend_from_slice(format!("{}", arr.len()).as_bytes());
+            dst.extend_from_slice(b"\r\n");
+            for it in arr.iter() {
+                serialize_redis_value(dst, it);
+            }
+        }
+    }
+}
+
 impl Decoder for RedisCodec {
     type Item = RedisValue;
 
@@ -152,12 +188,11 @@ impl Decoder for RedisCodec {
     }
 }
 
-/*
 impl Encoder<RedisValue> for RedisCodec {
     type Error = std::io::Error;
 
     fn encode(&mut self, item: RedisValue, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        serialize_redis_value(dst, &item);
         Ok(())
     }
 }
-*/
