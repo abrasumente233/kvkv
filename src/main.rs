@@ -1,9 +1,12 @@
+#![allow(dead_code)]
+
 use std::error::Error;
 
 use bytes::BytesMut;
+use futures::stream::StreamExt;
+use memchr::memchr;
 use tokio::net::{TcpListener, TcpStream};
-use tokio_util::codec::{Decoder, Encoder};
-use futures::{stream::StreamExt, SinkExt};
+use tokio_util::codec::Decoder;
 
 mod kvstore;
 
@@ -23,21 +26,68 @@ async fn run_echo_server() -> Result<(), Box<dyn Error>> {
 }
 
 async fn process_socket(socket: TcpStream) {
-    let codec = EchoCodec {};
+    let codec = RedisCodec {};
     let mut conn = codec.framed(socket);
     while let Some(message) = conn.next().await {
-        if let Ok(message) = message {
-            println!("received: {:?}", message);
-            conn.send(message).await.unwrap();
+        if let Ok(redis_value) = message {
+            println!("received: {:?}", redis_value);
         }
     }
 }
 
-struct EchoCodec;
-type Message = String;
+struct RedisCodec;
 
-impl Decoder for EchoCodec {
-    type Item = Message;
+#[derive(Debug)]
+enum RedisValue {
+    SimpleString(String),
+    Error(String),
+    Integer(i64),
+    BulkString(String),
+    Array(Vec<RedisValue>),
+}
+
+fn word(src: &mut BytesMut) -> Option<BytesMut> {
+    let pos = memchr(b'\r', &src)?;
+
+    // FIXME: pos + 2 can overrun the buffer
+    let mut word = src.split_to(pos + 2);
+    let word = word.split_to(pos);
+
+    Some(word)
+}
+
+fn int(src: &mut BytesMut) -> Option<i64> {
+    word(src).and_then(|b| {
+        let s = std::str::from_utf8(&b).unwrap(); // FIXME: Don't unwrap() here.
+        Some(s.parse().unwrap())
+    })
+}
+
+// TODO: Eliminate copies!
+fn simple_string(src: &mut BytesMut) -> Option<RedisValue> {
+    Some(RedisValue::SimpleString(String::from_utf8_lossy(&word(src)?).to_string()))
+}
+
+fn error(src: &mut BytesMut) -> Option<RedisValue> {
+    Some(RedisValue::Error(String::from_utf8_lossy(&word(src)?).to_string()))
+}
+
+fn integer(src: &mut BytesMut) -> Option<RedisValue> {
+    Some(RedisValue::Integer(int(src)?))
+}
+
+// TODO: More robost error handling
+fn bulk_string(src: &mut BytesMut) -> Option<RedisValue> {
+    // TODO: Use Result to indicate error.
+    let _len = int(src)?; // @TODO: Check length
+    let data = word(src)?;
+    let s = String::from_utf8_lossy(&data).to_string(); // TODO: Eliminate copy
+    
+    Some(RedisValue::BulkString(s))
+}
+
+impl Decoder for RedisCodec {
+    type Item = RedisValue;
 
     type Error = std::io::Error;
 
@@ -46,18 +96,24 @@ impl Decoder for EchoCodec {
             return Ok(None);
         }
 
-        let src = src.split();
-        let message = String::from_utf8_lossy(&src).to_string();
+        let first = src.split_to(1);
 
-        Ok(Some(message))
+        Ok(match first[0] {
+            b'+' => simple_string(src),
+            b'-' => error(src),
+            b':' => integer(src),
+            b'$' => bulk_string(src),
+            _ => panic!("Unknown first byte"), // TODO: Be a nice Rust citizen, don't panic
+        })
     }
 }
 
-impl Encoder<Message> for EchoCodec {
+/*
+impl Encoder<RedisValue> for RedisCodec {
     type Error = std::io::Error;
 
-    fn encode(&mut self, item: Message, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        dst.extend(item.as_bytes());
+    fn encode(&mut self, item: RedisValue, dst: &mut BytesMut) -> Result<(), Self::Error> {
         Ok(())
     }
 }
+*/
