@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::error::Error;
+use std::{error::Error, vec::IntoIter};
 
 use bytes::{Buf, BytesMut};
 use futures::{stream::StreamExt, SinkExt};
@@ -194,5 +194,103 @@ impl Encoder<RedisValue> for RedisCodec {
     fn encode(&mut self, item: RedisValue, dst: &mut BytesMut) -> Result<(), Self::Error> {
         serialize_redis_value(dst, &item);
         Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum Command {
+    Set(String, String),
+    Get(String),
+    Del(Vec<String>), // TODO: Try to use SmallVec
+}
+
+#[derive(Debug, PartialEq)]
+enum RedisError {
+    InvalidCommand,
+}
+
+fn get_command(mut arr: IntoIter<RedisValue>) -> Result<Command, RedisError> {
+    if let RedisValue::BulkString(k) = arr.next().unwrap() {
+        return Ok(Command::Get(k));
+    }
+
+    Err(RedisError::InvalidCommand)
+}
+
+fn set_command(mut arr: IntoIter<RedisValue>) -> Result<Command, RedisError> {
+    if let RedisValue::BulkString(k) = arr.next().unwrap() {
+        if let RedisValue::BulkString(v) = arr.next().unwrap() {
+            return Ok(Command::Set(k, v));
+        }
+    }
+
+    Err(RedisError::InvalidCommand)
+}
+
+fn del_command(arr: IntoIter<RedisValue>) -> Result<Command, RedisError> {
+    Ok(Command::Del(
+        arr.map(|v| match v {
+            RedisValue::BulkString(k) => k,
+            _ => panic!("Oh no"),
+        })
+        .collect(),
+    ))
+}
+
+// Cleanup
+impl Command {
+    fn from_resp(value: RedisValue) -> Result<Command, RedisError> {
+        match value {
+            RedisValue::Array(arr) => {
+                let mut arr = arr.into_iter();
+                if let RedisValue::BulkString(verb) = arr.next().unwrap() {
+                    if verb == "GET" {
+                        return get_command(arr);
+                    } else if verb == "SET" {
+                        return set_command(arr);
+                    } else if verb == "DEL" {
+                        return del_command(arr);
+                    }
+                }
+                Err(RedisError::InvalidCommand)
+            }
+            _ => Err(RedisError::InvalidCommand),
+        }
+    }
+}
+
+// TODO: Add failure tests
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command_resp(command: Vec<&str>) -> RedisValue {
+        RedisValue::Array(
+            command
+                .into_iter()
+                .map(|s| RedisValue::BulkString(s.to_string()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn parse_get_command() {
+        let v = command_resp(vec!["GET", "CS"]);
+        let cmd = Command::from_resp(v).unwrap();
+        assert_eq!(cmd, Command::Get("CS".into()));
+    }
+
+    #[test]
+    fn parse_set_command() {
+        let v = command_resp(vec!["SET", "CS", "Cloud Computing"]);
+        let cmd = Command::from_resp(v).unwrap();
+        assert_eq!(cmd, Command::Set("CS".into(), "Cloud Computing".into()));
+    }
+
+    #[test]
+    fn parse_del_command() {
+        let v = command_resp(vec!["DEL", "CS", "Sadness", "Sorrow"]);
+        let cmd = Command::from_resp(v).unwrap();
+        assert_eq!(cmd, Command::Del(vec!["CS".into(), "Sadness".into(), "Sorrow".into()]));
     }
 }
