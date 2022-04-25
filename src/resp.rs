@@ -13,6 +13,26 @@ pub enum RespValue {
     Array(Vec<RespValue>),
 }
 
+impl RespValue {
+    pub(crate) fn ok(msg: &str) -> RespValue {
+        RespValue::SimpleString(msg.into())
+    }
+
+    pub(crate) fn err(msg: &str) -> RespValue {
+        RespValue::Error(msg.into())
+    }
+
+    pub(crate) fn from_strs(command: Vec<&str>) -> RespValue {
+        RespValue::Array(
+            command
+                .into_iter()
+                .map(|s| RespValue::BulkString(s.to_string()))
+                .collect(),
+        )
+    }
+
+}
+
 fn word(src: &[u8]) -> Option<(&[u8], usize)> {
     let pos = memchr(b'\r', &src)?;
 

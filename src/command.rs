@@ -68,32 +68,23 @@ impl Command {
 mod tests {
     use super::*;
 
-    fn command_resp(command: Vec<&str>) -> RespValue {
-        RespValue::Array(
-            command
-                .into_iter()
-                .map(|s| RespValue::BulkString(s.to_string()))
-                .collect(),
-        )
-    }
-
     #[test]
     fn parse_get_command() {
-        let v = command_resp(vec!["GET", "CS"]);
+        let v = RespValue::from_strs(vec!["GET", "CS"]);
         let cmd = Command::from_resp(v).unwrap();
         assert_eq!(cmd, Command::Get("CS".into()));
     }
 
     #[test]
     fn parse_set_command() {
-        let v = command_resp(vec!["SET", "CS", "Cloud Computing"]);
+        let v = RespValue::from_strs(vec!["SET", "CS", "Cloud Computing"]);
         let cmd = Command::from_resp(v).unwrap();
         assert_eq!(cmd, Command::Set("CS".into(), "Cloud Computing".into()));
     }
 
     #[test]
     fn parse_del_command() {
-        let v = command_resp(vec!["DEL", "CS", "Sadness", "Sorrow"]);
+        let v = RespValue::from_strs(vec!["DEL", "CS", "Sadness", "Sorrow"]);
         let cmd = Command::from_resp(v).unwrap();
         assert_eq!(
             cmd,
