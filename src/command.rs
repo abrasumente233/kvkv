@@ -3,14 +3,14 @@ use std::vec::IntoIter;
 use crate::resp::*;
 
 #[derive(Debug, PartialEq)]
-enum Command {
+pub enum Command {
     Set(String, String),
     Get(String),
     Del(Vec<String>), // TODO: Try to use SmallVec
 }
 
 #[derive(Debug, PartialEq)]
-enum CommandError {
+pub enum CommandError {
     InvalidCommand,
 }
 
@@ -44,7 +44,7 @@ fn del_command(arr: IntoIter<RespValue>) -> Result<Command, CommandError> {
 
 // Cleanup
 impl Command {
-    fn from_resp(value: RespValue) -> Result<Command, CommandError> {
+    pub fn from_resp(value: RespValue) -> Result<Command, CommandError> {
         match value {
             RespValue::Array(arr) => {
                 let mut arr = arr.into_iter();
