@@ -1,6 +1,6 @@
-use bytes::{BytesMut, Buf};
+use bytes::{Buf, BytesMut};
 use memchr::memchr;
-use tokio_util::codec::{Encoder, Decoder};
+use tokio_util::codec::{Decoder, Encoder};
 
 pub struct RespCodec;
 

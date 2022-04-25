@@ -1,11 +1,11 @@
-use std::error::Error;
 use futures::{stream::StreamExt, SinkExt};
+use std::error::Error;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Decoder;
 
+mod command;
 mod kvstore;
 mod resp;
-mod command;
 
 use crate::resp::RespCodec;
 
