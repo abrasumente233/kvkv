@@ -159,7 +159,6 @@ fn serialize_redis_value(dst: &mut BytesMut, value: &RespValue) {
 
 impl Decoder for RespCodec {
     type Item = RespValue;
-
     type Error = std::io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {

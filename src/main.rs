@@ -7,6 +7,7 @@ mod command;
 mod coordinator;
 mod kvstore;
 mod participant;
+mod proto;
 mod resp;
 mod trace;
 

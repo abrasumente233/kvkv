@@ -15,7 +15,7 @@ pub async fn run() {
 }
 
 async fn run_participant() -> Result<(), Box<dyn Error>> {
-    let listener = TcpListener::bind("127.0.0.1:1337").await?;
+    let listener = TcpListener::bind("127.0.0.1:4444").await?;
     let mut backend = Backend {
         store: HashMap::new(),
     };

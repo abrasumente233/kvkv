@@ -10,6 +10,9 @@ bytes = "1.1.0"
 clap = { version = "3.1.12", features = ["derive"] }
 futures = "0.3.21"
 memchr = "2.4.1"
+serde = "1.0.136"
+serde_derive = "1.0.136"
+serde_json = "1.0.79"
 tokio = { version = "1.17.0", features = ["full"] }
 tokio-util = { version = "0.7.1", features = ["codec"] }
 tracing = "0.1.34"
