@@ -30,7 +30,6 @@ impl RespValue {
                 .collect(),
         )
     }
-
 }
 
 fn word(src: &[u8]) -> Option<(&[u8], usize)> {
