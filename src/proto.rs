@@ -7,7 +7,7 @@ use tokio_util::codec::{Decoder, Encoder};
 #[derive(Serialize, Deserialize, Debug)]
 /// Coordination packet format
 pub enum ProtoValue {
-    Handshake,
+    Handshake(u32),
 
     // Replica responds `Ack` when getting `Handshake` or `Launch`,
     // `Ack(0)` means the replica just started and have no data,
@@ -19,7 +19,8 @@ pub enum ProtoValue {
     Replicate(HashMap<String, String>),
 }
 
-struct ProtoCodec;
+#[derive(Debug)]
+pub struct ProtoCodec;
 
 impl Decoder for ProtoCodec {
     type Item = ProtoValue;
@@ -30,10 +31,10 @@ impl Decoder for ProtoCodec {
             let de = serde_json::Deserializer::from_slice(src);
             let mut value_stream = de.into_iter::<Self::Item>();
 
-            (
-                value_stream.next().unwrap().unwrap(),
-                value_stream.byte_offset(),
-            )
+            match value_stream.next() {
+                Some(Ok(proto_value)) => (proto_value, value_stream.byte_offset()),
+                _ => return Ok(None),
+            }
         };
 
         src.advance(bytes_read);

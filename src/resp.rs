@@ -122,7 +122,7 @@ fn parse(src: &[u8]) -> Option<(RespValue, usize)> {
     .map(|(v, p)| (v, p + 1)) // Plus the first byte
 }
 
-fn serialize_redis_value(dst: &mut BytesMut, value: &RespValue) {
+pub fn serialize_redis_value(dst: &mut BytesMut, value: &RespValue) {
     match value {
         RespValue::SimpleString(s) => {
             dst.extend_from_slice(b"+");

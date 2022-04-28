@@ -4,6 +4,7 @@ pub(crate) struct Backend<T>
 where
     T: KvStore,
 {
+    pub id: u32,
     pub store: T,
 }
 
