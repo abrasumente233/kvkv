@@ -1,8 +1,7 @@
 use crate::backend::Backend;
-use crate::command::Command;
 use crate::kvstore::KvStore;
 use crate::proto::{ProtoCodec, ProtoValue};
-use crate::resp::{RespCodec, RespValue, serialize_redis_value};
+use crate::resp::{RespValue, serialize_redis_value};
 
 use bytes::BytesMut;
 use futures::{stream::StreamExt, SinkExt};
