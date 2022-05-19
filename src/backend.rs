@@ -8,16 +8,11 @@ where
     pub store: T,
 }
 
-#[derive(Debug)]
-pub(crate) enum KvError {
-    InvalidKey,
-}
-
 impl<T> Backend<T>
 where
     T: KvStore,
 {
-    pub fn process_command(&mut self, cmd: Command) -> Result<RespValue, KvError> {
+    pub fn process_command(&mut self, cmd: Command) -> RespValue {
         use Command::*;
         match cmd {
             Get(k) => self.process_get(k),
@@ -26,24 +21,25 @@ where
         }
     }
 
-    fn process_get(&mut self, k: String) -> Result<RespValue, KvError> {
+    fn process_get(&mut self, k: String) -> RespValue {
         match self.store.kv_get(k.as_str()) {
-            Some(v) => Ok(RespValue::from_strs(vec!["GET", v])),
-            None => Err(KvError::InvalidKey),
+            Some(v) => RespValue::from_strs(vec![v]),
+            None => RespValue::from_strs(vec!["nil"]),
         }
     }
 
-    fn process_set(&mut self, k: String, v: String) -> Result<RespValue, KvError> {
+    fn process_set(&mut self, k: String, v: String) -> RespValue {
         self.store.kv_put(k.as_str(), v.as_str());
-        Ok(RespValue::ok("OK"))
+        RespValue::ok("OK")
     }
 
-    fn process_del(&mut self, keys: Vec<String>) -> Result<RespValue, KvError> {
+    fn process_del(&mut self, keys: Vec<String>) -> RespValue {
         // FIXME: Report how many keys are succussfully deleted
+        let mut num_deleted = 0;
         for key in keys {
-            self.store.kv_del(key.as_str());
+            num_deleted += self.store.kv_del(key.as_str()) as i64;
         }
 
-        Ok(RespValue::ok("OK"))
+        RespValue::Integer(num_deleted)
     }
 }

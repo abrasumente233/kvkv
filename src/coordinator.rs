@@ -105,14 +105,14 @@ impl Coordinator {
 
         info!("established connections to all replicas");
 
-        info!("coordinator is now waiting for scheduling client RESP packets");
+        info!("ready to schedule RESP packets");
 
         while let Some((resp_value, res_tx)) = self.rx_resp.recv().await {
-            trace!("scheduling {:?}", resp_value);
 
             // FIXME: schedule_next should return an Option<&Participant>
             // in case where no replica is available.
             let replica = self.schedule_next();
+            trace!("scheduling {:?} to replica #{}", resp_value, replica.id);
 
             let resp_bytes = resp_value.to_bytes();
 
@@ -136,7 +136,7 @@ impl Coordinator {
                 .unwrap();
 
             let response = match response {
-                ProtoValue::Resp(bytes) => RespValue::from_bytes(bytes),
+                ProtoValue::Resp(bytes) => RespValue::from_bytes(&bytes),
                 _ => panic!("replica replied with non-resp response: {:?}", response),
             };
 

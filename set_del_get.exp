@@ -1,0 +1,23 @@
+#!/usr/bin/expect -f
+
+set timeout -1
+
+spawn telnet 127.0.0.1 1337
+
+expect "Escape character is '^]'.\r"
+
+# Set CS06142=Cloud
+send -- "*3\r\$3\rSET\r\$7\rCS06142\r\$5\rCloud\r"
+expect "+OK\r\n"
+
+# Get CS06142, expect to be Cloud
+send -- "*2\r\$3\rGET\r\$7\rCS06142\r"
+expect "*1\r\n\$5\r\nCloud\r\n"
+
+# Delete CS06142, expect number of deleted keys, which is 1
+send -- "*2\r\$3\rDEL\r\$7\rCS06142\r"
+expect ":1\r\n"
+
+# Get CS06142 again, expect nil string
+send -- "*2\r\$3\rGET\r\$7\rCS06142\r"
+expect "*1\r\n\$3\r\nnil\r\n"

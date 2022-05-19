@@ -31,8 +31,15 @@ impl RespValue {
         )
     }
 
+    pub(crate) fn to_bytes(self) -> Vec<u8> {
+        let mut codec = RespCodec;
+        let mut bytes = BytesMut::new();
+        codec.encode(self, &mut bytes).unwrap();
+        bytes.to_vec()
+    }
+
     // FIXME: Oops, return errors!
-    pub(crate) fn from_bytes(resp_bytes: Vec<u8>) -> RespValue {
+    pub(crate) fn from_bytes(resp_bytes: &[u8]) -> RespValue {
         let mut codec = RespCodec;
         let mut bytes = BytesMut::new();
         bytes.extend_from_slice(&resp_bytes);
@@ -186,14 +193,5 @@ impl Encoder<RespValue> for RespCodec {
     fn encode(&mut self, item: RespValue, dst: &mut BytesMut) -> Result<(), Self::Error> {
         serialize_redis_value(dst, &item);
         Ok(())
-    }
-}
-
-impl RespValue {
-    pub fn to_bytes(self) -> Vec<u8> {
-        let mut codec = RespCodec;
-        let mut bytes = BytesMut::new();
-        codec.encode(self, &mut bytes).unwrap();
-        bytes.to_vec()
     }
 }

@@ -1,4 +1,5 @@
 use crate::backend::Backend;
+use crate::command::Command;
 use crate::kvstore::KvStore;
 use crate::proto::{ProtoCodec, ProtoValue};
 use crate::resp::{RespValue, serialize_redis_value};
@@ -36,7 +37,6 @@ where
     let mut conn = codec.framed(socket);
     while let Some(message) = conn.next().await {
         if let Ok(proto_value) = message {
-            trace!("received: {:?}", &proto_value);
             match proto_value {
                 ProtoValue::Handshake(id) => {
                     let response = ProtoValue::Ack(backend.id);
@@ -46,10 +46,15 @@ where
                     }
                     conn.send(response).await.unwrap(); // FIXME: Handle failure
                 }
-                ProtoValue::Resp(_resp_bytes) => {
-                    let resp_value = RespValue::ok("Hey!");
+                ProtoValue::Resp(resp_bytes) => {
+                    // Decode the resp_bytes
+                    let resp_value = RespValue::from_bytes(&resp_bytes);
+                    let command = Command::from_resp(resp_value).unwrap();
+                    trace!("processing command: {:?}", command);
+                    let result = backend.process_command(command);
+                    trace!("responding with: {:?}", &result);
                     let mut bytes = BytesMut::new();
-                    serialize_redis_value(&mut bytes, &resp_value);
+                    serialize_redis_value(&mut bytes, &result);
                     let response = ProtoValue::Resp(bytes.to_vec());
                     conn.send(response).await.unwrap(); // FIXME: Handle failure
                 }
