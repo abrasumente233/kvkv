@@ -19,21 +19,25 @@ use crate::{
 
 type CordMessage = (RespValue, oneshot::Sender<RespValue>);
 
-pub async fn run() {
+pub async fn run(port: u16) -> Result<(), Box<dyn Error>> {
     let (tx_resp, rx_resp) = mpsc::channel::<CordMessage>(16);
 
     let values = join!(
         spawn(async move { Coordinator::new(rx_resp).run().await.unwrap() }),
-        spawn(async move { listen_for_clients(tx_resp).await.unwrap() })
+        spawn(async move { listen_for_clients(tx_resp, port).await.unwrap() })
     );
 
-    values.0.unwrap();
-    values.1.unwrap();
+    (values.0?, values.1?);
+    Ok(())
 }
 
-async fn listen_for_clients(tx_resp: mpsc::Sender<CordMessage>) -> Result<(), Box<dyn Error>> {
-    let listener = TcpListener::bind("127.0.0.1:1337").await?;
-    info!("Listening on 127.0.0.1:1337");
+async fn listen_for_clients(
+    tx_resp: mpsc::Sender<CordMessage>,
+    port: u16,
+) -> Result<(), Box<dyn Error>> {
+    let address = format!("127.0.0.1:{}", port);
+    info!("listening on {}", address);
+    let listener = TcpListener::bind(address).await?;
 
     loop {
         let tx_resp = tx_resp.clone();
@@ -87,12 +91,20 @@ struct Coordinator {
 impl Coordinator {
     fn new(rx_resp: mpsc::Receiver<CordMessage>) -> Coordinator {
         Coordinator {
-            replicas: vec![Participant {
-                id: 1,
-                status: Status::Down,
-                address: "127.0.0.1:4444".parse().unwrap(),
-                conn: None,
-            }],
+            replicas: vec![
+                Participant {
+                    id: 0,
+                    status: Status::Down,
+                    address: "127.0.0.1:4444".parse().unwrap(),
+                    conn: None,
+                },
+                Participant {
+                    id: 1,
+                    status: Status::Down,
+                    address: "127.0.0.1:4445".parse().unwrap(),
+                    conn: None,
+                },
+            ],
             rx_resp,
             next_sched: 0,
         }
@@ -108,7 +120,6 @@ impl Coordinator {
         info!("ready to schedule RESP packets");
 
         while let Some((resp_value, res_tx)) = self.rx_resp.recv().await {
-
             // FIXME: schedule_next should return an Option<&Participant>
             // in case where no replica is available.
             let replica = self.schedule_next();
@@ -152,7 +163,7 @@ impl Coordinator {
         for replica in self.replicas.iter_mut() {
             let mut stream;
             loop {
-                info!("Waiting for participant #{}...", replica.id);
+                info!("waiting for participant #{}...", replica.id);
                 stream = TcpStream::connect(replica.address).await;
                 match stream {
                     Ok(_) => break,
@@ -198,11 +209,14 @@ impl Coordinator {
         loop {
             let pa = &self.replicas[self.next_sched as usize];
 
+            // cleanup
             if pa.status == Status::Launching {
-                return &mut self.replicas[self.next_sched as usize];
+                let res = &mut self.replicas[self.next_sched as usize];
+                self.next_sched = (self.next_sched + 1) % num_replicas;
+                return res;
+            } else {
+                self.next_sched = (self.next_sched + 1) % num_replicas;
             }
-
-            self.next_sched = (self.next_sched + 1) % num_replicas;
         }
     }
 }

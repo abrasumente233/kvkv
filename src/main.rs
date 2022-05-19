@@ -16,6 +16,10 @@ struct Cli {
     /// Run as coordinator, and run as participant if unspecified
     #[clap(short)]
     coordinator: bool,
+
+    /// Port number
+    #[clap(short, long)]
+    port: u16,
 }
 
 #[tokio::main]
@@ -26,9 +30,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     info!("Hello from kvkv []~（￣▽￣）~*");
     if cli.coordinator {
-        coordinator::run().await;
+        coordinator::run(cli.port).await.unwrap();
     } else {
-        participant::run().await;
+        participant::run(cli.port).await.unwrap();
     }
 
     Ok(())
