@@ -2,6 +2,11 @@
 
 set timeout -1
 
+expect_before {
+    timeout { puts "timeout"; exit 2 }
+    eof     { puts "eof";     exit 1 }
+}
+
 spawn telnet 127.0.0.1 1337
 
 expect "Escape character is '^]'.\r"
