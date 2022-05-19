@@ -1,5 +1,32 @@
 # Notes on KV store
 
+## The fetch & process pattern
+
+When writing concurrent programs, it's likely to encounter
+the fetch & process pattern, where we do some time consuming
+task, and wait for its result to process.
+
+For example, we fetch a webpage and print it, using Rust's async/await feature:
+
+```rust
+// fetch
+let body = reqwest::get("https://www.rust-lang.org")
+    .await?
+    .text()
+    .await?;
+
+// process
+println!("body = {:?}", body);
+```
+
+It enables easier to understand, synchronous-like code, whereas in
+languages without async/await like C/C++, you probably have to spawn
+several producers and consumers tasks to handle such situation.
+
+Consider a web crawler app, where tens of thoudsands of requests can
+be sent at the same time.
+
+
 ## What is the point of key-value stores?
 
 It might seem strange to bother with a seemingly primtive
