@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::{error::Error, net::SocketAddr, time::Duration};
+use std::{error::Error, net::{SocketAddr, SocketAddrV4}, time::Duration};
 
 use futures::{SinkExt, StreamExt};
 use tokio::{
@@ -35,7 +35,7 @@ async fn listen_for_clients(
     tx_resp: mpsc::Sender<CordMessage>,
     port: u16,
 ) -> Result<(), Box<dyn Error>> {
-    let address = format!("127.0.0.1:{}", port);
+    let address = SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, port);
     info!("listening on {}", address);
     let listener = TcpListener::bind(address).await?;
 

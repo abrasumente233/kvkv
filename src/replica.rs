@@ -5,13 +5,14 @@ use crate::proto::{ProtoCodec, ProtoValue};
 use crate::resp::RespValue;
 
 use futures::{stream::StreamExt, SinkExt};
+use std::net::SocketAddrV4;
 use std::{collections::HashMap, error::Error};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Decoder;
 use tracing::{info, trace, warn};
 
 pub async fn run(port: u16) -> Result<(), Box<dyn Error>> {
-    let address = format!("127.0.0.1:{}", port);
+    let address = SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, port);
     info!("starting replica on {}", address);
     let listener = TcpListener::bind(address).await?;
     let mut backend = Backend {
@@ -46,7 +47,11 @@ where
                     let response = process_resp(resp, backend).await;
                     conn.send(response).await.unwrap(); // FIXME: Handle failure
                 }
-                _ => warn!("Unknown proto value: {:?}", proto_value),
+                _ => {
+                    warn!("Unknown proto value: {:?}", proto_value);
+                    let response = RespValue::Error("ERROR".into());
+                    conn.send(response.into()).await.unwrap(); // FIXME: Handle failure
+                }
             }
         }
     }
@@ -58,7 +63,9 @@ where
 {
     let command = Command::try_from(resp_value).unwrap();
     trace!("processing command: {:?}", command);
-    let result = backend.process_command(command);
-    trace!("responding with: {:?}", &result);
-    ProtoValue::Resp(result)
+
+    let response = backend.process_command(command);
+    trace!("responding with: {:?}", &response);
+
+    response.into()
 }

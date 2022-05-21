@@ -52,3 +52,9 @@ impl Encoder<ProtoValue> for ProtoCodec {
         Ok(())
     }
 }
+
+impl Into<ProtoValue> for RespValue {
+    fn into(self) -> ProtoValue {
+        ProtoValue::Resp(self)
+    }
+}
