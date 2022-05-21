@@ -1,6 +1,10 @@
 #![allow(dead_code)]
 
-use std::{error::Error, net::{SocketAddr, SocketAddrV4}, time::Duration};
+use std::{
+    error::Error,
+    net::{SocketAddr, SocketAddrV4},
+    time::Duration,
+};
 
 use futures::{SinkExt, StreamExt};
 use tokio::{
@@ -10,20 +14,30 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 use tokio_util::codec::{Decoder, Framed};
-use tracing::{info, trace};
+use tracing::{error, info, trace, warn};
 
 use crate::{
     proto::{ProtoCodec, ProtoValue},
     resp::{RespCodec, RespValue},
 };
 
-type CordMessage = (RespValue, oneshot::Sender<RespValue>);
+/// A [ProtoValue] message that can be sent to a [Master],
+/// who manages all connections to the [Replica]s.
+///
+/// After sending the RESP message, the [Master] will
+/// wait for a response from the [Replica], and use the
+/// provided `oneshot` to send the response back to the message sender.
+///
+/// [Master]: ../master/struct.Master.html
+/// [Replica]: ../master/struct.Replica.html
+/// [ProtoValue]: ../proto/enum.ProtoValue.html
+type MasterMessage = (ProtoValue, oneshot::Sender<ProtoValue>);
 
-pub async fn run(port: u16) -> Result<(), Box<dyn Error>> {
-    let (tx_resp, rx_resp) = mpsc::channel::<CordMessage>(16);
+pub async fn run(port: u16, replica_addrs: Vec<String>) -> Result<(), Box<dyn Error>> {
+    let (tx_resp, master_chan) = mpsc::channel::<MasterMessage>(16);
 
     let values = join!(
-        spawn(async move { Coordinator::new(rx_resp).run().await.unwrap() }),
+        spawn(async move { Master::new(master_chan, replica_addrs).run().await.unwrap() }),
         spawn(async move { listen_for_clients(tx_resp, port).await.unwrap() })
     );
 
@@ -32,11 +46,11 @@ pub async fn run(port: u16) -> Result<(), Box<dyn Error>> {
 }
 
 async fn listen_for_clients(
-    tx_resp: mpsc::Sender<CordMessage>,
+    tx_resp: mpsc::Sender<MasterMessage>,
     port: u16,
 ) -> Result<(), Box<dyn Error>> {
     let address = SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, port);
-    info!("listening on {}", address);
+    info!("starting master on {}", address);
     let listener = TcpListener::bind(address).await?;
 
     loop {
@@ -46,188 +60,209 @@ async fn listen_for_clients(
     }
 }
 
-async fn handle_client_socket(socket: TcpStream, tx_resp: mpsc::Sender<CordMessage>) {
-    // NOTE: The coordinator must decode the packet in order to know
-    // if there's any valid RESP packet to be forward.
-    // Seems wasteful.
+async fn handle_client_socket(socket: TcpStream, master: mpsc::Sender<MasterMessage>) {
     let codec = RespCodec {};
     let mut conn = codec.framed(socket);
     while let Some(message) = conn.next().await {
         if let Ok(resp_value) = message {
-            let (tx, rx) = oneshot::channel();
-            // We just unwrap because we don't have much to do
-            // if inter task communication failed...
-            tx_resp.send((resp_value, tx)).await.unwrap();
-
-            match rx.await {
-                Ok(value) => conn.send(value).await.unwrap(), // FIXME: handle connection error
-                Err(_) => panic!("coordinator returns an error after processing an RESP value"),
+            match talk_to_master(&master, resp_value.into()).await {
+                Ok(ProtoValue::Resp(resp_value)) => conn.send(resp_value).await.unwrap(), // FIXME: handle connection error
+                Ok(_) => panic!("replica returns non-resp value"),
+                Err(_) => panic!("sender dropped"),
             }
         }
     }
+}
+
+// I should really come up with a better name for this :)
+async fn talk_to_master(
+    master: &mpsc::Sender<MasterMessage>,
+    proto_value: ProtoValue,
+) -> Result<ProtoValue, tokio::sync::oneshot::error::RecvError> {
+    let (tx, res) = oneshot::channel();
+
+    // We just unwrap because we don't have much to do
+    // if inter task communication failed...
+    master.send((proto_value, tx)).await.unwrap();
+
+    res.await
 }
 
 #[derive(Debug, PartialEq)]
 enum Status {
-    Down,
-    Launching,
-    Replicating,
+    Offline,
+    Online,
+    Recover,
 }
 
 #[derive(Debug)]
-struct Participant {
+struct Replica {
     id: u32,
     status: Status,
-    address: SocketAddr,
+    addr: SocketAddr,
     conn: Option<Framed<TcpStream, ProtoCodec>>,
 }
 
-struct Coordinator {
-    replicas: Vec<Participant>,
-    rx_resp: mpsc::Receiver<CordMessage>,
-    next_sched: usize,
+struct Master {
+    replicas: Vec<Replica>,
+    master_chan: mpsc::Receiver<MasterMessage>,
+    next_sched: u32,
+    written: bool,
 }
 
-impl Coordinator {
-    fn new(rx_resp: mpsc::Receiver<CordMessage>) -> Coordinator {
-        Coordinator {
-            replicas: vec![
-                Participant {
-                    id: 0,
-                    status: Status::Down,
-                    address: "127.0.0.1:4444".parse().unwrap(),
-                    conn: None,
-                },
-                Participant {
-                    id: 1,
-                    status: Status::Down,
-                    address: "127.0.0.1:4445".parse().unwrap(),
-                    conn: None,
-                },
-            ],
-            rx_resp,
+impl Master {
+    fn new(master_chan: mpsc::Receiver<MasterMessage>, replica_addrs: Vec<String>) -> Master {
+        let replicas = replica_addrs
+            .into_iter()
+            .enumerate()
+            .map(|(id, addr)| Replica {
+                id: id as u32,
+                status: Status::Offline,
+                addr: addr.parse().unwrap(),
+                conn: None,
+            })
+            .collect();
+
+        Master {
+            replicas,
+            master_chan,
             next_sched: 0,
+            written: false,
         }
     }
 
     async fn run(mut self) -> Result<(), Box<dyn Error>> {
-        info!("starting the coordinator");
+        info!("starting the master");
 
-        self.establish_connection().await;
+        self.connect_all().await;
 
-        info!("established connections to all replicas");
+        info!("accepting RESP messages");
 
-        info!("ready to schedule RESP packets");
-
-        while let Some((resp_value, res_tx)) = self.rx_resp.recv().await {
-            // FIXME: schedule_next should return an Option<&Participant>
-            // in case where no replica is available.
+        while let Some((proto_value, res_chan)) = self.master_chan.recv().await {
             let replica = self.schedule_next();
-            trace!("scheduling {:?} to replica #{}", resp_value, replica.id);
 
-            // CLEANUP: implement send_frame() method on Participant
-            // so that we don't have to make a long chain every time...
-            replica
-                .conn
-                .as_mut()
-                .unwrap()
-                .send(ProtoValue::Resp(resp_value))
-                .await
-                .unwrap();
+            match replica {
+                Some(replica) => {
+                    trace!("scheduling {:?} to replica #{}", proto_value, replica.id);
 
-            let response = replica
-                .conn
-                .as_mut()
-                .unwrap()
-                .next()
-                .await
-                .unwrap()
-                .unwrap();
+                    // FIXME: handle connection error
+                    let response = replica.talk(proto_value).await.unwrap();
 
-            let response = match response {
-                ProtoValue::Resp(resp_value) => resp_value,
-                _ => panic!("replica replied with non-resp response: {:?}", response),
-            };
+                    match response {
+                        ProtoValue::Resp(_) => (),
+                        _ => panic!("replica replied with non-resp response: {:?}", response),
+                    }
 
-            res_tx.send(response).unwrap();
+                    // FIXME: Sometimes the message sender doesn't
+                    // want the response, and drops the res_rx, in
+                    // which case we shouldn't unwrap() directly?
+                    res_chan.send(response).unwrap();
+                }
+                None => {
+                    warn!("no replica available");
+                    res_chan
+                        .send(RespValue::Error("ERROR".into()).into())
+                        .unwrap();
+                }
+            }
         }
 
-        info!("shutting down coordinator");
+        info!("shutting down master");
 
         Ok(())
     }
 
-    async fn establish_connection(&mut self) {
-        for replica in self.replicas.iter_mut() {
-            let mut stream;
-            loop {
-                info!("waiting for participant #{}...", replica.id);
-                stream = TcpStream::connect(replica.address).await;
-                match stream {
-                    Ok(_) => break,
-                    Err(_) => tokio::time::sleep(Duration::from_secs(5)).await,
-                };
-            }
-
-            let codec = ProtoCodec {};
-            let conn = codec.framed(stream.unwrap());
-
-            replica.status = Status::Launching;
-            replica.conn = Some(conn);
-            info!("connected to participant #{}", replica.id);
-
-            /*
-            info!("Connected to participant #{}, handshaking...", replica.id);
-
-            let handshake = ProtoValue::Handshake(replica.id);
-            replica.send_value(handshake).await;
-
-            let proto_value = replica.receive_value().await;
-
-            match proto_value {
-                ProtoValue::Ack(0) => {
-                    info!("Participant #{} acked 0, launching", replica.id);
-                    replica.status = Status::Launching;
-                }
-                ProtoValue::Ack(id) => {
-                    assert_eq!(replica.id, id);
-                    replica.status = Status::Launching;
-                }
-                _ => {
-                    panic!("Invalid response packet from participant #{}", replica.id);
-                }
-            }
-            */
+    async fn connect_all(&mut self) {
+        for r in self.replicas.iter_mut() {
+            // FIXME: handle connection error
+            r.try_connect(self.written).await.unwrap();
         }
+
+        info!("established connections to all replicas");
     }
 
-    fn schedule_next(&mut self) -> &mut Participant {
-        // FIXME: Don't schedule when there's no running replicas
-        let num_replicas = self.replicas.len();
-        loop {
-            let pa = &self.replicas[self.next_sched as usize];
+    fn schedule_next(&mut self) -> Option<&mut Replica> {
+        let n = self.replicas.len();
+        let r = self
+            .replicas
+            .iter_mut()
+            .filter(|r| r.id >= self.next_sched && r.status == Status::Online)
+            .next();
 
-            // cleanup
-            if pa.status == Status::Launching {
-                let res = &mut self.replicas[self.next_sched as usize];
-                self.next_sched = (self.next_sched + 1) % num_replicas;
-                return res;
-            } else {
-                self.next_sched = (self.next_sched + 1) % num_replicas;
-            }
+        // Oh no
+        if let Some(r) = r {
+            self.next_sched = (r.id + 1) % n as u32;
+            Some(r)
+        } else {
+            self.next_sched = 0;
+            None
         }
     }
 }
 
-impl Participant {
-    async fn send_value(&mut self, value: ProtoValue) {
+impl Replica {
+    async fn write_frame(&mut self, value: ProtoValue) -> Result<(), std::io::Error> {
         let conn = self.conn.as_mut().unwrap();
-        conn.send(value).await.unwrap(); // FIXME: Handle error
+        conn.send(value).await
     }
 
-    // FIXME: Return error
-    async fn receive_value(&mut self) -> ProtoValue {
+    async fn read_frame(&mut self) -> Option<Result<ProtoValue, std::io::Error>> {
         let conn = self.conn.as_mut().unwrap();
-        conn.next().await.unwrap().unwrap()
+        conn.next().await
+    }
+
+    async fn try_connect(&mut self, written: bool) -> Result<(), std::io::Error> {
+        let mut stream;
+        loop {
+            info!("waiting for R{} on {}", self.id, self.addr);
+            stream = TcpStream::connect(self.addr).await;
+            match stream {
+                Ok(_) => break,
+                Err(_) => tokio::time::sleep(Duration::from_secs(5)).await,
+            };
+        }
+
+        let codec = ProtoCodec {};
+        let conn = codec.framed(stream.unwrap());
+        self.conn = Some(conn);
+        self.status = Status::Online;
+
+        let response = self.talk(ProtoValue::Handshake(self.id)).await?;
+
+        match response {
+            ProtoValue::Handshake(u32::MAX) => {
+                info!("R{} ack u32::MAX, fresh starting", self.id);
+
+                // Depend on whether any write operations happened,
+                // we need to restore the data to the replica.
+                if written {
+                    self.status = Status::Recover;
+                    unimplemented!();
+                } else {
+                    self.status = Status::Online;
+                }
+            }
+            ProtoValue::Handshake(id) => {
+                assert_eq!(self.id, id);
+                self.status = Status::Online;
+            }
+            _ => {
+                error!(
+                    "R{} should have replied with Handshake, but replied with {:?}",
+                    self.id, response
+                );
+                panic!("Invalid response packet from R{}", self.id);
+            }
+        }
+
+        info!("connected to R{}", self.id);
+
+        Ok(())
+    }
+
+    async fn talk(&mut self, value: ProtoValue) -> Result<ProtoValue, std::io::Error> {
+        self.write_frame(value).await?;
+        // FIXME: return connection error
+        Ok(self.read_frame().await.unwrap()?)
     }
 }

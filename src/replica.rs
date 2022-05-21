@@ -36,7 +36,7 @@ where
         if let Ok(proto_value) = message {
             match proto_value {
                 ProtoValue::Handshake(id) => {
-                    let response = ProtoValue::Ack(backend.id);
+                    let response = ProtoValue::Handshake(backend.id);
                     if backend.id == 0 {
                         info!("Received id: {id}");
                         backend.id = id;

@@ -13,13 +13,15 @@ mod trace;
 
 #[derive(Parser)]
 struct Cli {
-    /// Run as coordinator, and run as participant if unspecified
-    #[clap(short)]
-    master: bool,
-
-    /// Port number
+    /// Listen on this port
     #[clap(short, long)]
     port: u16,
+
+    /// Replica addresses. 
+    /// If specified, the program will run as master and try to connect to the
+    /// replicas.
+    #[clap(short, long)]
+    replica_addresses: Vec<String>,
 }
 
 #[tokio::main]
@@ -29,8 +31,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     info!("hello from kvkv []~（￣▽￣）~*");
-    if cli.master {
-        master::run(cli.port).await.unwrap();
+    if cli.replica_addresses.len() != 0 {
+        master::run(cli.port, cli.replica_addresses).await.unwrap();
     } else {
         replica::run(cli.port).await.unwrap();
     }

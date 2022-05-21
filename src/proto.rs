@@ -10,13 +10,6 @@ use crate::resp::RespValue;
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ProtoValue {
     Handshake(u32),
-
-    // Replica responds `Ack` when getting `Handshake` or `Launch`,
-    // `Ack(0)` means the replica just started and have no data,
-    // `Ack(other)` means the replica is running, and `other` is
-    // the replica ID.
-    Ack(u32),
-
     Resp(RespValue),
     Replicate(HashMap<String, String>),
 }
