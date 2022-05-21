@@ -1,6 +1,7 @@
 pub trait KvStore {
     fn kv_get(&self, key: &str) -> Option<&str>;
     fn kv_put(&mut self, key: &str, value: &str);
+    /// Returns true if the key was in the map.
     fn kv_del(&mut self, key: &str) -> bool;
 }
 
@@ -15,7 +16,6 @@ impl KvStore for std::collections::HashMap<String, String> {
         self.insert(key.into(), value.into());
     }
 
-    /// Returns true if the key was in the map.
     #[inline]
     fn kv_del(&mut self, key: &str) -> bool {
         self.remove(key).is_some()

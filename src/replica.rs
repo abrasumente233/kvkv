@@ -1,10 +1,9 @@
 use crate::backend::Backend;
 use crate::command::Command;
-use crate::kvstore::KvStore;
+use crate::map::KvStore;
 use crate::proto::{ProtoCodec, ProtoValue};
-use crate::resp::{serialize_redis_value, RespValue};
+use crate::resp::RespValue;
 
-use bytes::BytesMut;
 use futures::{stream::StreamExt, SinkExt};
 use std::{collections::HashMap, error::Error};
 use tokio::net::{TcpListener, TcpStream};
@@ -43,8 +42,8 @@ where
                     }
                     conn.send(response).await.unwrap(); // FIXME: Handle failure
                 }
-                ProtoValue::Resp(resp_bytes) => {
-                    let response = process_resp(resp_bytes, backend).await;
+                ProtoValue::Resp(resp) => {
+                    let response = process_resp(resp, backend).await;
                     conn.send(response).await.unwrap(); // FIXME: Handle failure
                 }
                 _ => warn!("Unknown proto value: {:?}", proto_value),
@@ -53,16 +52,13 @@ where
     }
 }
 
-async fn process_resp<T>(resp_bytes: Vec<u8>, backend: &mut Backend<T>) -> ProtoValue
+async fn process_resp<T>(resp_value: RespValue, backend: &mut Backend<T>) -> ProtoValue
 where
     T: KvStore,
 {
-    let resp_value = RespValue::from_bytes(&resp_bytes);
-    let command = Command::from_resp(resp_value).unwrap();
+    let command = Command::try_from(resp_value).unwrap();
     trace!("processing command: {:?}", command);
     let result = backend.process_command(command);
     trace!("responding with: {:?}", &result);
-    let mut bytes = BytesMut::new();
-    serialize_redis_value(&mut bytes, &result);
-    ProtoValue::Resp(bytes.to_vec())
+    ProtoValue::Resp(result)
 }

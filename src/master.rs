@@ -125,15 +125,13 @@ impl Coordinator {
             let replica = self.schedule_next();
             trace!("scheduling {:?} to replica #{}", resp_value, replica.id);
 
-            let resp_bytes = resp_value.to_bytes();
-
             // CLEANUP: implement send_frame() method on Participant
             // so that we don't have to make a long chain every time...
             replica
                 .conn
                 .as_mut()
                 .unwrap()
-                .send(ProtoValue::Resp(resp_bytes))
+                .send(ProtoValue::Resp(resp_value))
                 .await
                 .unwrap();
 
@@ -147,7 +145,7 @@ impl Coordinator {
                 .unwrap();
 
             let response = match response {
-                ProtoValue::Resp(bytes) => RespValue::from_bytes(&bytes),
+                ProtoValue::Resp(resp_value) => resp_value,
                 _ => panic!("replica replied with non-resp response: {:?}", response),
             };
 

@@ -4,8 +4,10 @@ use bytes::{Buf, BufMut, BytesMut};
 use serde_derive::{Deserialize, Serialize};
 use tokio_util::codec::{Decoder, Encoder};
 
-#[derive(Serialize, Deserialize, Debug)]
+use crate::resp::RespValue;
+
 /// Coordination packet format
+#[derive(Serialize, Deserialize, Debug)]
 pub enum ProtoValue {
     Handshake(u32),
 
@@ -15,7 +17,7 @@ pub enum ProtoValue {
     // the replica ID.
     Ack(u32),
 
-    Resp(Vec<u8>),
+    Resp(RespValue),
     Replicate(HashMap<String, String>),
 }
 

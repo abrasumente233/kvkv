@@ -42,9 +42,9 @@ fn del_command(arr: IntoIter<RespValue>) -> Result<Command, CommandError> {
     ))
 }
 
-// Cleanup
-impl Command {
-    pub fn from_resp(value: RespValue) -> Result<Command, CommandError> {
+impl TryFrom<RespValue> for Command {
+    type Error = CommandError;
+    fn try_from(value: RespValue) -> Result<Self, Self::Error> {
         match value {
             RespValue::Array(arr) => {
                 let mut arr = arr.into_iter();
@@ -56,10 +56,10 @@ impl Command {
                         _ => (),
                     };
                 }
-                Err(CommandError::InvalidCommand)
             }
-            _ => Err(CommandError::InvalidCommand),
-        }
+            _ => (),
+        };
+        Err(CommandError::InvalidCommand)
     }
 }
 
@@ -70,22 +70,22 @@ mod tests {
 
     #[test]
     fn parse_get_command() {
-        let v = RespValue::from_strs(vec!["GET", "CS"]);
-        let cmd = Command::from_resp(v).unwrap();
+        let v = RespValue::array(&["GET", "CS"]);
+        let cmd = Command::try_from(v).unwrap();
         assert_eq!(cmd, Command::Get("CS".into()));
     }
 
     #[test]
     fn parse_set_command() {
-        let v = RespValue::from_strs(vec!["SET", "CS", "Cloud Computing"]);
-        let cmd = Command::from_resp(v).unwrap();
+        let v = RespValue::array(&["SET", "CS", "Cloud Computing"]);
+        let cmd = Command::try_from(v).unwrap();
         assert_eq!(cmd, Command::Set("CS".into(), "Cloud Computing".into()));
     }
 
     #[test]
     fn parse_del_command() {
-        let v = RespValue::from_strs(vec!["DEL", "CS", "Sadness", "Sorrow"]);
-        let cmd = Command::from_resp(v).unwrap();
+        let v = RespValue::array(&["DEL", "CS", "Sadness", "Sorrow"]);
+        let cmd = Command::try_from(v).unwrap();
         assert_eq!(
             cmd,
             Command::Del(vec!["CS".into(), "Sadness".into(), "Sorrow".into()])

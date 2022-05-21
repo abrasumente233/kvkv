@@ -1,10 +1,11 @@
 use bytes::{Buf, BytesMut};
 use memchr::memchr;
+use serde_derive::{Deserialize, Serialize};
 use tokio_util::codec::{Decoder, Encoder};
 
 pub struct RespCodec;
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum RespValue {
     SimpleString(String),
     Error(String),
@@ -14,15 +15,8 @@ pub enum RespValue {
 }
 
 impl RespValue {
-    pub(crate) fn ok(msg: &str) -> RespValue {
-        RespValue::SimpleString(msg.into())
-    }
-
-    pub(crate) fn err(msg: &str) -> RespValue {
-        RespValue::Error(msg.into())
-    }
-
-    pub(crate) fn from_strs(command: Vec<&str>) -> RespValue {
+    /// Convenient method to create an `Array` of `BulkString`s
+    pub(crate) fn array(command: &[&str]) -> RespValue {
         RespValue::Array(
             command
                 .into_iter()
@@ -31,7 +25,8 @@ impl RespValue {
         )
     }
 
-    pub(crate) fn to_bytes(self) -> Vec<u8> {
+    #[allow(dead_code)]
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
         let mut codec = RespCodec;
         let mut bytes = BytesMut::new();
         codec.encode(self, &mut bytes).unwrap();
@@ -39,11 +34,72 @@ impl RespValue {
     }
 
     // FIXME: Oops, return errors!
+    #[allow(dead_code)]
     pub(crate) fn from_bytes(resp_bytes: &[u8]) -> RespValue {
         let mut codec = RespCodec;
         let mut bytes = BytesMut::new();
         bytes.extend_from_slice(&resp_bytes);
+
         codec.decode(&mut bytes).unwrap().unwrap()
+    }
+}
+
+impl Decoder for RespCodec {
+    type Item = RespValue;
+    type Error = std::io::Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        match parse(src) {
+            Some((value, pos)) => {
+                src.advance(pos);
+                Ok(Some(value))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+impl Encoder<RespValue> for RespCodec {
+    type Error = std::io::Error;
+
+    fn encode(&mut self, item: RespValue, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        serialize_redis_value(dst, &item);
+        Ok(())
+    }
+}
+
+pub fn serialize_redis_value(dst: &mut BytesMut, value: &RespValue) {
+    match value {
+        RespValue::SimpleString(s) => {
+            dst.extend_from_slice(b"+");
+            dst.extend_from_slice(s.as_bytes());
+            dst.extend_from_slice(b"\r\n");
+        }
+        RespValue::Error(s) => {
+            dst.extend_from_slice(b"-");
+            dst.extend_from_slice(s.as_bytes());
+            dst.extend_from_slice(b"\r\n");
+        }
+        RespValue::Integer(i) => {
+            dst.extend_from_slice(b":");
+            dst.extend_from_slice(format!("{}", i).as_bytes());
+            dst.extend_from_slice(b"\r\n");
+        }
+        RespValue::BulkString(s) => {
+            dst.extend_from_slice(b"$");
+            dst.extend_from_slice(format!("{}", s.len()).as_bytes());
+            dst.extend_from_slice(b"\r\n");
+            dst.extend_from_slice(s.as_bytes());
+            dst.extend_from_slice(b"\r\n");
+        }
+        RespValue::Array(arr) => {
+            dst.extend_from_slice(b"*");
+            dst.extend_from_slice(format!("{}", arr.len()).as_bytes());
+            dst.extend_from_slice(b"\r\n");
+            for it in arr.iter() {
+                serialize_redis_value(dst, it);
+            }
+        }
     }
 }
 
@@ -135,63 +191,4 @@ fn parse(src: &[u8]) -> Option<(RespValue, usize)> {
         _ => None, // TODO: Report more concrete error.
     }
     .map(|(v, p)| (v, p + 1)) // Plus the first byte
-}
-
-pub fn serialize_redis_value(dst: &mut BytesMut, value: &RespValue) {
-    match value {
-        RespValue::SimpleString(s) => {
-            dst.extend_from_slice(b"+");
-            dst.extend_from_slice(s.as_bytes());
-            dst.extend_from_slice(b"\r\n");
-        }
-        RespValue::Error(s) => {
-            dst.extend_from_slice(b"-");
-            dst.extend_from_slice(s.as_bytes());
-            dst.extend_from_slice(b"\r\n");
-        }
-        RespValue::Integer(i) => {
-            dst.extend_from_slice(b":");
-            dst.extend_from_slice(format!("{}", i).as_bytes());
-            dst.extend_from_slice(b"\r\n");
-        }
-        RespValue::BulkString(s) => {
-            dst.extend_from_slice(b"$");
-            dst.extend_from_slice(format!("{}", s.len()).as_bytes());
-            dst.extend_from_slice(b"\r\n");
-            dst.extend_from_slice(s.as_bytes());
-            dst.extend_from_slice(b"\r\n");
-        }
-        RespValue::Array(arr) => {
-            dst.extend_from_slice(b"*");
-            dst.extend_from_slice(format!("{}", arr.len()).as_bytes());
-            dst.extend_from_slice(b"\r\n");
-            for it in arr.iter() {
-                serialize_redis_value(dst, it);
-            }
-        }
-    }
-}
-
-impl Decoder for RespCodec {
-    type Item = RespValue;
-    type Error = std::io::Error;
-
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        match parse(src) {
-            Some((value, pos)) => {
-                src.advance(pos);
-                Ok(Some(value))
-            }
-            None => Ok(None),
-        }
-    }
-}
-
-impl Encoder<RespValue> for RespCodec {
-    type Error = std::io::Error;
-
-    fn encode(&mut self, item: RespValue, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        serialize_redis_value(dst, &item);
-        Ok(())
-    }
 }

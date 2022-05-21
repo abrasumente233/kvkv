@@ -4,10 +4,10 @@ use tracing::info;
 
 mod backend;
 mod command;
-mod coordinator;
-mod kvstore;
-mod participant;
+mod map;
+mod master;
 mod proto;
+mod replica;
 mod resp;
 mod trace;
 
@@ -15,7 +15,7 @@ mod trace;
 struct Cli {
     /// Run as coordinator, and run as participant if unspecified
     #[clap(short)]
-    coordinator: bool,
+    master: bool,
 
     /// Port number
     #[clap(short, long)]
@@ -28,11 +28,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let cli = Cli::parse();
 
-    info!("Hello from kvkv []~（￣▽￣）~*");
-    if cli.coordinator {
-        coordinator::run(cli.port).await.unwrap();
+    info!("hello from kvkv []~（￣▽￣）~*");
+    if cli.master {
+        master::run(cli.port).await.unwrap();
     } else {
-        participant::run(cli.port).await.unwrap();
+        replica::run(cli.port).await.unwrap();
     }
 
     Ok(())

@@ -1,4 +1,4 @@
-use crate::{command::Command, kvstore::KvStore, resp::RespValue};
+use crate::{command::Command, map::KvStore, resp::RespValue};
 
 pub(crate) struct Backend<T>
 where
@@ -23,14 +23,14 @@ where
 
     fn process_get(&mut self, k: String) -> RespValue {
         match self.store.kv_get(k.as_str()) {
-            Some(v) => RespValue::from_strs(vec![v]),
-            None => RespValue::from_strs(vec!["nil"]),
+            Some(v) => RespValue::array(&[v]),
+            None => RespValue::array(&["nil"]),
         }
     }
 
     fn process_set(&mut self, k: String, v: String) -> RespValue {
         self.store.kv_put(k.as_str(), v.as_str());
-        RespValue::ok("OK")
+        RespValue::SimpleString("OK".into())
     }
 
     fn process_del(&mut self, keys: Vec<String>) -> RespValue {
