@@ -161,6 +161,7 @@ impl Master {
                     ProtoValue::Resp(resp) => {
                         if resp.is_write() {
                             // FIXME: handle connection error
+                            self.written = true;
                             self.do_write(resp.into()).await.unwrap()
                         } else {
                             replica.talk(resp.into()).await.unwrap()

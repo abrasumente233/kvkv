@@ -33,8 +33,7 @@ where
 {
     let codec = ProtoCodec {};
     let mut conn = codec.framed(socket);
-    loop {
-        let proto_value = read_frame(&mut conn).await.unwrap();
+    while let Some(proto_value) = read_frame(&mut conn).await {
         match proto_value {
             ProtoValue::Handshake(id) => {
                 trace!("Handshake({id})");
@@ -57,6 +56,7 @@ where
             }
         }
     }
+    warn!("master disconnceted");
 }
 
 // cleanup
