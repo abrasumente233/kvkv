@@ -17,7 +17,7 @@ struct Cli {
     #[clap(short, long)]
     port: u16,
 
-    /// Replica addresses. 
+    /// Replica addresses.
     /// If specified, the program will run as master and try to connect to the
     /// replicas.
     #[clap(short, long)]

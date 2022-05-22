@@ -5,7 +5,7 @@ use tokio_util::codec::{Decoder, Encoder};
 
 pub struct RespCodec;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum RespValue {
     SimpleString(String),
     Error(String),
@@ -15,6 +15,22 @@ pub enum RespValue {
 }
 
 impl RespValue {
+    pub(crate) fn is_write(&self) -> bool {
+        match self {
+            RespValue::Array(arr) => {
+                let mut arr = arr.into_iter();
+                if let RespValue::BulkString(verb) = arr.next().unwrap() {
+                    return match verb.as_str() {
+                        "SET" | "DEL" => true,
+                        _ => false,
+                    };
+                }
+            }
+            _ => (),
+        };
+        false
+    }
+
     /// Convenient method to create an `Array` of `BulkString`s
     pub(crate) fn array(command: &[&str]) -> RespValue {
         RespValue::Array(

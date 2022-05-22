@@ -11,13 +11,16 @@ use tokio::{
     join,
     net::{TcpListener, TcpStream},
     spawn,
-    sync::{mpsc, oneshot},
+    sync::{
+        mpsc,
+        oneshot::{self, error::RecvError},
+    },
 };
 use tokio_util::codec::{Decoder, Framed};
 use tracing::{error, info, trace, warn};
 
 use crate::{
-    proto::{ProtoCodec, ProtoValue},
+    proto::{read_frame, write_frame, ProtoCodec, ProtoValue},
     resp::{RespCodec, RespValue},
 };
 
@@ -63,13 +66,12 @@ async fn listen_for_clients(
 async fn handle_client_socket(socket: TcpStream, master: mpsc::Sender<MasterMessage>) {
     let codec = RespCodec {};
     let mut conn = codec.framed(socket);
-    while let Some(message) = conn.next().await {
-        if let Ok(resp_value) = message {
-            match talk_to_master(&master, resp_value.into()).await {
-                Ok(ProtoValue::Resp(resp_value)) => conn.send(resp_value).await.unwrap(), // FIXME: handle connection error
-                Ok(_) => panic!("replica returns non-resp value"),
-                Err(_) => panic!("sender dropped"),
-            }
+    loop {
+        let resp = read_frame(&mut conn).await.unwrap();
+        match talk_to_master(&master, resp.into()).await {
+            Ok(ProtoValue::Resp(resp)) => write_frame(&mut conn, resp).await.unwrap(), // FIXME: handle connection error
+            Ok(_) => panic!("replica returns non-resp value"),
+            Err(_) => panic!("sender dropped"),
         }
     }
 }
@@ -78,7 +80,7 @@ async fn handle_client_socket(socket: TcpStream, master: mpsc::Sender<MasterMess
 async fn talk_to_master(
     master: &mpsc::Sender<MasterMessage>,
     proto_value: ProtoValue,
-) -> Result<ProtoValue, tokio::sync::oneshot::error::RecvError> {
+) -> Result<ProtoValue, RecvError> {
     let (tx, res) = oneshot::channel();
 
     // We just unwrap because we don't have much to do
@@ -139,14 +141,24 @@ impl Master {
         info!("accepting RESP messages");
 
         while let Some((proto_value, res_chan)) = self.master_chan.recv().await {
+            // FIXME: shouldn't pick a replica if it's write operation
             let replica = self.schedule_next();
 
             match replica {
                 Some(replica) => {
                     trace!("scheduling {:?} to replica #{}", proto_value, replica.id);
 
-                    // FIXME: handle connection error
-                    let response = replica.talk(proto_value).await.unwrap();
+                    let response: ProtoValue = match proto_value {
+                        ProtoValue::Resp(resp) => {
+                            if resp.is_write() {
+                                // FIXME: handle connection error
+                                self.do_write(resp.into()).await.unwrap()
+                            } else {
+                                replica.talk(resp.into()).await.unwrap()
+                            }
+                        }
+                        _ => unreachable!(),
+                    };
 
                     match response {
                         ProtoValue::Resp(_) => (),
@@ -170,6 +182,35 @@ impl Master {
         info!("shutting down master");
 
         Ok(())
+    }
+
+    // Implements two-phase commit
+    // FIXME: Only send messages to replicas that are ONLINE
+    async fn do_write(&mut self, value: ProtoValue) -> Result<ProtoValue, std::io::Error> {
+        // Step 1: send write to all replicas
+        let mut all_yes = true;
+        for r in self.replicas.iter_mut() {
+            // Step 2: wait for all replicas to reply
+            // Perf: don't clone
+            let response = r.talk(value.clone()).await.unwrap();
+            match response {
+                ProtoValue::Vote(vote) => all_yes &= vote,
+                _ => unreachable!(),
+            }
+        }
+
+        // Step 3: if all replicas agree, write to all replicas
+        let decision = ProtoValue::Decision(all_yes);
+        let mut res = ProtoValue::Handshake(444);
+        for r in self.replicas.iter_mut() {
+            let response = r.talk(decision.clone()).await.unwrap();
+            match response {
+                ProtoValue::Resp(resp) => res = resp.into(),
+                _ => unreachable!(),
+            }
+        }
+
+        Ok(res)
     }
 
     async fn connect_all(&mut self) {
@@ -243,6 +284,7 @@ impl Replica {
                 }
             }
             ProtoValue::Handshake(id) => {
+                info!("reconnected to R{}", id);
                 assert_eq!(self.id, id);
                 self.status = Status::Online;
             }
@@ -254,8 +296,6 @@ impl Replica {
                 panic!("Invalid response packet from R{}", self.id);
             }
         }
-
-        info!("connected to R{}", self.id);
 
         Ok(())
     }

@@ -8,7 +8,7 @@ pub(crate) fn init() -> Result<(), Box<dyn Error>> {
         Ok(filter) => filter,
         Err(_) => EnvFilter::default().add_directive("kvkv=trace".parse()?),
     };
-    
+
     Registry::default()
         .with(env_filter)
         .with(fmt::layer())

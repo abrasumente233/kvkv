@@ -1,7 +1,7 @@
 use crate::backend::Backend;
 use crate::command::Command;
 use crate::map::KvStore;
-use crate::proto::{ProtoCodec, ProtoValue};
+use crate::proto::{read_frame, write_frame, ProtoCodec, ProtoValue};
 use crate::resp::RespValue;
 
 use futures::{stream::StreamExt, SinkExt};
@@ -16,7 +16,7 @@ pub async fn run(port: u16) -> Result<(), Box<dyn Error>> {
     info!("starting replica on {}", address);
     let listener = TcpListener::bind(address).await?;
     let mut backend = Backend {
-        id: 0,
+        id: u32::MAX,
         store: HashMap::new(),
     };
 
@@ -32,40 +32,84 @@ where
 {
     let codec = ProtoCodec {};
     let mut conn = codec.framed(socket);
-    while let Some(message) = conn.next().await {
-        if let Ok(proto_value) = message {
-            match proto_value {
-                ProtoValue::Handshake(id) => {
-                    let response = ProtoValue::Handshake(backend.id);
-                    if backend.id == 0 {
-                        info!("Received id: {id}");
-                        backend.id = id;
-                    }
-                    conn.send(response).await.unwrap(); // FIXME: Handle failure
+    loop {
+        let proto_value = read_frame(&mut conn).await.unwrap();
+        match proto_value {
+            ProtoValue::Handshake(id) => {
+                info!("Handshake({id})");
+                let response = ProtoValue::Handshake(backend.id);
+                backend.id = id;
+                write_frame(&mut conn, response).await.unwrap();
+            }
+            ProtoValue::Resp(resp) => {
+                if resp.is_write() {
+                    handle_write(&mut conn, backend, resp).await.unwrap();
+                } else {
+                    let response = process_resp(resp, backend);
+                    write_frame(&mut conn, response.into()).await.unwrap();
                 }
-                ProtoValue::Resp(resp) => {
-                    let response = process_resp(resp, backend).await;
-                    conn.send(response).await.unwrap(); // FIXME: Handle failure
-                }
-                _ => {
-                    warn!("Unknown proto value: {:?}", proto_value);
-                    let response = RespValue::Error("ERROR".into());
-                    conn.send(response.into()).await.unwrap(); // FIXME: Handle failure
-                }
+            }
+            _ => {
+                warn!("Unknown proto value: {:?}", proto_value);
+                let response = RespValue::Error("ERROR".into());
+                conn.send(response.into()).await.unwrap(); // FIXME: Handle failure
             }
         }
     }
 }
 
-async fn process_resp<T>(resp_value: RespValue, backend: &mut Backend<T>) -> ProtoValue
+// cleanup
+async fn handle_write<T, F, E>(
+    conn: &mut F,
+    backend: &mut Backend<T>,
+    resp: RespValue,
+) -> Result<(), Box<dyn Error>>
+where
+    T: KvStore,
+    F: StreamExt<Item = Result<ProtoValue, E>>
+        + SinkExt<ProtoValue>
+        + Unpin
+        + futures::Sink<ProtoValue, Error = E>,
+    E: Error,
+{
+    // Vote yes
+    let vote = ProtoValue::Vote(true);
+    write_frame(conn, vote).await.unwrap();
+
+    // Wait for final decision
+    let decision = read_frame(conn).await.unwrap();
+
+    // Execute the decision and send final response
+    let response = match decision {
+        ProtoValue::Decision(true) => {
+            info!("commit {:?}", resp);
+            process_resp(resp, backend)
+        }
+        ProtoValue::Decision(false) => {
+            info!("abort {:?}", resp);
+            ProtoValue::Decision(false) // echo as ACK
+        }
+        _ => unreachable!(),
+    };
+    write_frame(conn, response).await.unwrap();
+
+    Ok(())
+}
+
+fn process_resp<T>(resp_value: RespValue, backend: &mut Backend<T>) -> ProtoValue
 where
     T: KvStore,
 {
-    let command = Command::try_from(resp_value).unwrap();
-    trace!("processing command: {:?}", command);
+    let response = match Command::try_from(resp_value) {
+        Ok(cmd) => {
+            info!("processing command: {:?}", &cmd);
+            backend.process_command(cmd)
+        }
+        Err(_) => RespValue::Error("ERROR".into()),
+    }
+    .into();
 
-    let response = backend.process_command(command);
     trace!("responding with: {:?}", &response);
 
-    response.into()
+    response
 }

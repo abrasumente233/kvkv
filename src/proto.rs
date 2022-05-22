@@ -1,16 +1,19 @@
 use std::collections::HashMap;
 
 use bytes::{Buf, BufMut, BytesMut};
+use futures::{stream::StreamExt, SinkExt};
 use serde_derive::{Deserialize, Serialize};
 use tokio_util::codec::{Decoder, Encoder};
 
 use crate::resp::RespValue;
 
 /// Coordination packet format
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ProtoValue {
     Handshake(u32),
     Resp(RespValue),
+    Vote(bool),
+    Decision(bool),
     Replicate(HashMap<String, String>),
 }
 
@@ -50,4 +53,23 @@ impl Into<ProtoValue> for RespValue {
     fn into(self) -> ProtoValue {
         ProtoValue::Resp(self)
     }
+}
+
+pub(crate) async fn read_frame<V, F, E>(conn: &mut F) -> Option<V>
+where
+    F: StreamExt<Item = Result<V, E>> + Unpin,
+{
+    while let Some(message) = conn.next().await {
+        if let Ok(frame) = message {
+            return Some(frame);
+        }
+    }
+    None
+}
+
+pub(crate) async fn write_frame<V, F, E>(conn: &mut F, value: V) -> Result<(), E>
+where
+    F: SinkExt<V> + Unpin + futures::Sink<V, Error = E>,
+{
+    conn.send(value).await
 }
