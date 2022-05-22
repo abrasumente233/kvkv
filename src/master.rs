@@ -13,11 +13,11 @@ use tokio::{
     spawn,
     sync::{
         mpsc,
-        oneshot::{self, error::RecvError},
+        oneshot::{self, error::RecvError, Sender},
     },
 };
 use tokio_util::codec::{Decoder, Framed};
-use tracing::{error, info, trace, warn};
+use tracing::{error, info, instrument, trace, warn};
 
 use crate::{
     proto::{read_frame, write_frame, ProtoCodec, ProtoValue},
@@ -59,15 +59,14 @@ async fn listen_for_clients(
     loop {
         let tx_resp = tx_resp.clone();
         let (socket, _) = listener.accept().await?;
-        handle_client_socket(socket, tx_resp).await;
+        handle_client(socket, tx_resp).await;
     }
 }
 
-async fn handle_client_socket(socket: TcpStream, master: mpsc::Sender<MasterMessage>) {
+async fn handle_client(socket: TcpStream, master: mpsc::Sender<MasterMessage>) {
     let codec = RespCodec {};
     let mut conn = codec.framed(socket);
-    loop {
-        let resp = read_frame(&mut conn).await.unwrap();
+    while let Some(resp) = read_frame(&mut conn).await {
         match talk_to_master(&master, resp.into()).await {
             Ok(ProtoValue::Resp(resp)) => write_frame(&mut conn, resp).await.unwrap(), // FIXME: handle connection error
             Ok(_) => panic!("replica returns non-resp value"),
@@ -138,45 +137,10 @@ impl Master {
 
         self.connect_all().await;
 
-        info!("accepting RESP messages");
+        info!("ready");
 
-        while let Some((proto_value, res_chan)) = self.master_chan.recv().await {
-            // FIXME: shouldn't pick a replica if it's write operation
-            let replica = self.schedule_next();
-
-            match replica {
-                Some(replica) => {
-                    trace!("scheduling {:?} to replica #{}", proto_value, replica.id);
-
-                    let response: ProtoValue = match proto_value {
-                        ProtoValue::Resp(resp) => {
-                            if resp.is_write() {
-                                // FIXME: handle connection error
-                                self.do_write(resp.into()).await.unwrap()
-                            } else {
-                                replica.talk(resp.into()).await.unwrap()
-                            }
-                        }
-                        _ => unreachable!(),
-                    };
-
-                    match response {
-                        ProtoValue::Resp(_) => (),
-                        _ => panic!("replica replied with non-resp response: {:?}", response),
-                    }
-
-                    // FIXME: Sometimes the message sender doesn't
-                    // want the response, and drops the res_rx, in
-                    // which case we shouldn't unwrap() directly?
-                    res_chan.send(response).unwrap();
-                }
-                None => {
-                    warn!("no replica available");
-                    res_chan
-                        .send(RespValue::Error("ERROR".into()).into())
-                        .unwrap();
-                }
-            }
+        while let Some((proto, res_chan)) = self.master_chan.recv().await {
+            self.handle_proto(proto, res_chan).await;
         }
 
         info!("shutting down master");
@@ -184,10 +148,53 @@ impl Master {
         Ok(())
     }
 
+    #[instrument(skip(self, res_chan))]
+    async fn handle_proto(&mut self, proto: ProtoValue, res_chan: Sender<ProtoValue>) {
+        // FIXME: shouldn't pick a replica if it's write operation
+        let replica = self.schedule_next();
+
+        match replica {
+            Some(replica) => {
+                trace!("schedule to R{}", replica.id);
+
+                let response: ProtoValue = match proto {
+                    ProtoValue::Resp(resp) => {
+                        if resp.is_write() {
+                            // FIXME: handle connection error
+                            self.do_write(resp.into()).await.unwrap()
+                        } else {
+                            replica.talk(resp.into()).await.unwrap()
+                        }
+                    }
+                    _ => unreachable!(),
+                };
+
+                match response {
+                    ProtoValue::Resp(_) => (),
+                    _ => panic!("replica replied with non-resp response: {:?}", response),
+                }
+
+                // FIXME: Sometimes the message sender doesn't
+                // want the response, and drops the res_rx, in
+                // which case we shouldn't unwrap() directly?
+                res_chan.send(response).unwrap();
+            }
+            None => {
+                warn!("no replica available");
+                res_chan
+                    .send(RespValue::Error("ERROR".into()).into())
+                    .unwrap();
+            }
+        }
+    }
+
     // Implements two-phase commit
     // FIXME: Only send messages to replicas that are ONLINE
+    #[instrument(skip(self, value))]
     async fn do_write(&mut self, value: ProtoValue) -> Result<ProtoValue, std::io::Error> {
         // Step 1: send write to all replicas
+        // FIXME: We're spending N*RTT here.
+        trace!("asking replicas to write");
         let mut all_yes = true;
         for r in self.replicas.iter_mut() {
             // Step 2: wait for all replicas to reply
@@ -201,6 +208,7 @@ impl Master {
 
         // Step 3: if all replicas agree, write to all replicas
         let decision = ProtoValue::Decision(all_yes);
+        trace!("decision: {:?}", decision);
         let mut res = ProtoValue::Handshake(444);
         for r in self.replicas.iter_mut() {
             let response = r.talk(decision.clone()).await.unwrap();
@@ -209,17 +217,19 @@ impl Master {
                 _ => unreachable!(),
             }
         }
+        trace!("response: {:?}", res);
 
         Ok(res)
     }
 
+    #[instrument(skip(self))]
     async fn connect_all(&mut self) {
         for r in self.replicas.iter_mut() {
             // FIXME: handle connection error
             r.try_connect(self.written).await.unwrap();
         }
 
-        info!("established connections to all replicas");
+        trace!("connected to all replicas");
     }
 
     fn schedule_next(&mut self) -> Option<&mut Replica> {
@@ -252,10 +262,11 @@ impl Replica {
         conn.next().await
     }
 
+    #[instrument(skip(self))]
     async fn try_connect(&mut self, written: bool) -> Result<(), std::io::Error> {
         let mut stream;
         loop {
-            info!("waiting for R{} on {}", self.id, self.addr);
+            trace!("waiting for R{} on {}", self.id, self.addr);
             stream = TcpStream::connect(self.addr).await;
             match stream {
                 Ok(_) => break,
@@ -272,7 +283,7 @@ impl Replica {
 
         match response {
             ProtoValue::Handshake(u32::MAX) => {
-                info!("R{} ack u32::MAX, fresh starting", self.id);
+                trace!("R{} ack u32::MAX, fresh starting", self.id);
 
                 // Depend on whether any write operations happened,
                 // we need to restore the data to the replica.
@@ -284,7 +295,7 @@ impl Replica {
                 }
             }
             ProtoValue::Handshake(id) => {
-                info!("reconnected to R{}", id);
+                trace!("reconnected to R{}", id);
                 assert_eq!(self.id, id);
                 self.status = Status::Online;
             }

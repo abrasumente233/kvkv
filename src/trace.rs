@@ -1,6 +1,7 @@
 use std::error::Error;
 
-use tracing_subscriber::{fmt, prelude::*, EnvFilter, Registry};
+use tracing_subscriber::{prelude::*, EnvFilter, Registry};
+use tracing_tree::HierarchicalLayer;
 
 pub(crate) fn init() -> Result<(), Box<dyn Error>> {
     // Set env filter level to kvkv=trace
@@ -11,7 +12,11 @@ pub(crate) fn init() -> Result<(), Box<dyn Error>> {
 
     Registry::default()
         .with(env_filter)
-        .with(fmt::layer())
+        .with(
+            HierarchicalLayer::new(2)
+                .with_bracketed_fields(true)
+                .with_targets(true),
+        )
         .init();
     Ok(())
 }

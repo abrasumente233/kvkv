@@ -9,7 +9,7 @@ use std::net::SocketAddrV4;
 use std::{collections::HashMap, error::Error};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Decoder;
-use tracing::{info, trace, warn};
+use tracing::{info, trace, warn, instrument};
 
 pub async fn run(port: u16) -> Result<(), Box<dyn Error>> {
     let address = SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, port);
@@ -22,11 +22,12 @@ pub async fn run(port: u16) -> Result<(), Box<dyn Error>> {
 
     loop {
         let (socket, _) = listener.accept().await?;
-        process_socket(socket, &mut backend).await;
+        handle_socket(socket, &mut backend).await;
     }
 }
 
-async fn process_socket<T>(socket: TcpStream, backend: &mut Backend<T>)
+#[instrument(skip(socket, backend))]
+async fn handle_socket<T>(socket: TcpStream, backend: &mut Backend<T>)
 where
     T: KvStore,
 {
@@ -36,7 +37,7 @@ where
         let proto_value = read_frame(&mut conn).await.unwrap();
         match proto_value {
             ProtoValue::Handshake(id) => {
-                info!("Handshake({id})");
+                trace!("Handshake({id})");
                 let response = ProtoValue::Handshake(backend.id);
                 backend.id = id;
                 write_frame(&mut conn, response).await.unwrap();
@@ -59,6 +60,7 @@ where
 }
 
 // cleanup
+#[instrument(skip(conn, backend))]
 async fn handle_write<T, F, E>(
     conn: &mut F,
     backend: &mut Backend<T>,
@@ -75,6 +77,7 @@ where
     // Vote yes
     let vote = ProtoValue::Vote(true);
     write_frame(conn, vote).await.unwrap();
+    trace!("voted yes");
 
     // Wait for final decision
     let decision = read_frame(conn).await.unwrap();
@@ -82,11 +85,11 @@ where
     // Execute the decision and send final response
     let response = match decision {
         ProtoValue::Decision(true) => {
-            info!("commit {:?}", resp);
+            trace!("master says commit");
             process_resp(resp, backend)
         }
         ProtoValue::Decision(false) => {
-            info!("abort {:?}", resp);
+            trace!("master says abort");
             ProtoValue::Decision(false) // echo as ACK
         }
         _ => unreachable!(),
@@ -102,14 +105,14 @@ where
 {
     let response = match Command::try_from(resp_value) {
         Ok(cmd) => {
-            info!("processing command: {:?}", &cmd);
+            trace!("command: {:?}", &cmd);
             backend.process_command(cmd)
         }
         Err(_) => RespValue::Error("ERROR".into()),
     }
     .into();
 
-    trace!("responding with: {:?}", &response);
+    trace!("respond: {:?}", &response);
 
     response
 }
